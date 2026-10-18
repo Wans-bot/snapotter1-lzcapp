@@ -1,0 +1,197 @@
+# subdomain 一经发布不可更改：它决定应用的实例标识与数据存储路径。
+application:
+  subdomain: snapotter
+  upstreams:
+    - location: /
+      # SnapOtter 的页面、REST API 与 /api/docs 都在 1349 端口
+      backend: http://snapotter.cloud.lazycat.app.snapotter1.lzcapp:1349
+      disable_trim_location: true
+      # 注意：不要开启 fix_websocket_header。网关的大小写修正会额外追加一个
+      # Sec-WebSocket-Key，上游会报 WebSocket protocol violation:
+      # multiple Sec-WebSocket-Key headers 导致连接 400（evcc 已踩过）。
+  health_check:
+    # 应用级检测：直接给 http url，不依赖容器内部有 curl/wget
+    test_url: http://snapotter.cloud.lazycat.app.snapotter1.lzcapp:1349/
+    start_period: 300s
+    timeout: 10s
+
+  injects:
+    # ── 网盘文件拦截（官方《自动拦截文件选择器》专题）──────────────────────────
+    # 1) 同源文件桥接：选择器读写他人共享目录时，把 /__lazycat_file_bridge/* 转发到
+    #    当前微服的网盘服务 file.<微服域名>。缺了它，选他人共享目录会 409/401。
+    - id: lazycat-file-bridge
+      'on': request
+      auth_required: false
+      when:
+        - /__lazycat_file_bridge/*
+      do:
+        - src: |
+            const bridgePrefix = "/__lazycat_file_bridge";
+            const requestHost = String(ctx.request.host || "")
+              .split(":")[0]
+              .toLowerCase();
+            const firstDot = requestHost.indexOf(".");
+            const method = String(ctx.request.method || "").toUpperCase();
+
+            if (
+              firstDot <= 0 ||
+              !requestHost.endsWith(".heiyu.space") ||
+              !["GET", "HEAD", "PUT"].includes(method)
+            ) {
+              ctx.response.send(
+                ["GET", "HEAD", "PUT"].includes(method) ? 400 : 405,
+                "Invalid LazyCat file bridge request",
+              );
+              return;
+            }
+
+            const boxDomain = requestHost.slice(firstDot + 1);
+            const fileOrigin = "https://file." + boxDomain;
+            const targetPath =
+              "/files/home" + ctx.request.path.slice(bridgePrefix.length);
+
+            ctx.headers.del("Origin");
+            ctx.headers.del("Referer");
+            ctx.proxy.to(fileOrigin, {
+              path: targetPath,
+              query: ctx.request.raw_query,
+              use_target_host: true,
+              timeout_ms: 120000,
+              on_fail: "error",
+            });
+    # 2) 统一「打开 / 保存」窗口：接管 input[type=file]、showOpen/SaveFilePicker
+    #    与带 download 的 blob:/data: 锚点（SnapOtter 的「从电脑上传」是点击后才创建
+    #    的隐藏 input，正好被这个钩子接管）。
+    - id: open-save-chooser
+      'on': browser
+      # 必须是 true（默认值）：官方选择器需要平台客户端/会话才能工作。
+      # 审核 #20194 的复现结论：在普通浏览器里它会初始化失败，但它已经把
+      # input/anchor 的 click 钩走，导致「从电脑上传」点了没反应（本地文件也选不了）。
+      # 设成 true 后，没有平台上下文的浏览器里平台直接跳过这条注入，应用自己的上传路径保持可用；
+      # 客户端/扩展环境照常执行，网盘拦截不受影响。
+      auth_required: true
+      when:
+        - /*
+      do:
+        - src: >-
+            file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
+          params:
+            diskRoot: /_lzc/files/home
+            fileBridgeRoot: /__lazycat_file_bridge
+            fallbackMime: application/octet-stream
+            locale: auto
+            hooks:
+              fileSystemAccess: true
+              fileInput: true
+              downloadAnchor: true
+    # 2b) 自愈兜底：万一在「有平台上下文但选择器仍失败」的环境里（或注入顺序变化时），
+    #     监听选择器报错并把钩子还原成浏览器原生路径，避免上传整条断掉。
+    - id: snapotter-picker-fallback
+      'on': browser
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/snapotter-picker-fallback.js
+    # 2c) CSP 微调：官方选择器把网盘文件面板放在 iframe 里，来源是 https://file.<盒子域名>。
+    #     应用自带 CSP 是 default-src 'self' 且没有 frame-src（回落到 default-src），
+    #     于是 iframe 被 CSP 拦掉 —— 选择器面板会出现但内容为空（正是审核 #20194 附件截图的样子：
+    #     面板里只有网盘文件/本地文件两个标签和一张「禁止」图标）。
+    #     官方 advanced-injects.md 把「CORS/CSP 微调：按路径精确增删响应头，适配 iframe」列为适用场景，
+    #     这里只增补 frame-src / child-src / connect-src，其余指令原样保留。
+    - id: snapotter-csp-allow-file-domain
+      'on': response
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: |
+            try {
+              var host = String(ctx.request.host || "").split(":")[0].toLowerCase();
+              var firstDot = host.indexOf(".");
+              var csp = ctx.headers.get("content-security-policy");
+              if (csp && firstDot > 0) {
+                var boxDomain = host.slice(firstDot + 1);
+                var fileOrigin = "https://file." + boxDomain;
+                var appOrigin = "https://" + host;
+                var directives = [];
+                var raw = csp.split(";");
+                for (var i = 0; i < raw.length; i++) {
+                  var d = raw[i].replace(/^\s+|\s+$/g, "");
+                  if (d) directives.push(d);
+                }
+                function directiveIndex(name) {
+                  for (var k = 0; k < directives.length; k++) {
+                    if (directives[k].split(/\s+/)[0].toLowerCase() === name) return k;
+                  }
+                  return -1;
+                }
+                function allow(name, values) {
+                  var idx = directiveIndex(name);
+                  if (idx === -1) {
+                    directives.push(name + " " + values.join(" "));
+                    return;
+                  }
+                  var parts = directives[idx].split(/\s+/);
+                  var existing = parts.slice(1);
+                  var add = [];
+                  for (var v = 0; v < values.length; v++) {
+                    if (existing.indexOf(values[v]) === -1) add.push(values[v]);
+                  }
+                  if (add.length) directives[idx] = parts.join(" ") + " " + add.join(" ");
+                }
+                allow("frame-src", [fileOrigin, appOrigin]);
+                allow("child-src", [fileOrigin, appOrigin]);
+                allow("connect-src", [fileOrigin]);
+                ctx.headers.set("content-security-policy", directives.join("; "));
+              }
+            } catch (err) {
+              console.log("[snapotter-csp] CSP 微调跳过：" + err);
+            }
+    # 3) 结果下载补接：SnapOtter 的下载按钮（lib/download.ts）把结果地址直接挂在
+    #    <a download> 上，是「同源普通 HTTP」地址，官方钩子只认 blob:/data:，
+    #    不补接就会走浏览器原生下载、不进网盘。
+    - id: snapotter-http-download-bridge
+      'on': browser
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/snapotter-http-download-bridge.js
+
+services:
+  snapotter:
+    # 自建镜像：由上游 2.2.0 官方镜像出发，**删除 packages/enterprise/**（商业许可目录，
+    # 禁止再分发），再 flatten 成单层后推到公开源、由 lzc-cli appstore copy-image 转入
+    # 懒猫镜像源。这样分发的镜像里不存在该目录（详见 content/NOTICE.md）。
+    image: registry.lazycat.cloud/wans/snapotter-community-2c1f:0912dfc1c41fd846
+    environment:
+      - TZ=Asia/Shanghai
+      # 关闭匿名产品分析与错误监控（Sentry/PostHog），实例内不再有任何遥测上报
+      - SNAPOTTER_TELEMETRY=0
+      # 免密登录：访问控制交给微服账号体系（网关 SSO），关闭应用自带的登录。
+      # 上游源码 app/apps/api/src/index.ts:181 与 plugins/auth.ts:326 在
+      # AUTH_ENABLED=false 时直接放行，前端读 /api/v1/config/auth 后也不再跳登录页。
+      - AUTH_ENABLED=false
+      # 界面默认简体中文（上游 i18n 语言键为 zh-CN）
+      - DEFAULT_LOCALE=zh-CN
+      # 关键修复：镜像默认把 PYTHON_VENV_PATH 指向 /data/ai/venv（AI 增强包用的 venv，位于
+      # 持久化目录里，是空的/只有 AI 依赖），而 PDF/文档类工具（PyMuPDF、pikepdf、weasyprint、
+      # pdf2docx）依赖的是镜像自带的 /opt/venv。实测官方镜像下 /pdf/pdf-to-text 报
+      # "Processing failed: PyMuPDF not installed"，29 个 PDF/文档工具全部不可用。
+      # 这里指回 /opt/venv，功能即恢复（环境内实测通过）。
+      - PYTHON_VENV_PATH=/opt/venv
+    binds:
+      # /data 下包含内嵌 PostgreSQL 17 与 Redis 8 的数据、上传文件、处理结果与按需下载的模型
+      - /lzcapp/var/data:/data
+    # flatten 成单层镜像后，镜像自带的 HEALTHCHECK 不再保留，这里显式声明等价探针
+    # （原镜像用的是同一条：curl -sf --max-time 5 http://localhost:1349/api/v1/health）。
+    # 平台就绪门要求每个服务都有 health 状态，缺了会一直卡在「启动中」。
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -sf --max-time 5 http://localhost:1349/api/v1/health || exit 1
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3

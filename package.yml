@@ -1,0 +1,63 @@
+package: cloud.lazycat.app.snapotter1
+version: 2.2.0-5
+name: snapotter
+description: 自托管的文件处理工作台：转码、压缩、OCR、转写、抠图等 200+ 工具
+author: SnapOtter
+license: AGPL-3.0
+homepage: https://github.com/snapotter-hq/SnapOtter
+min_os_version: 1.6.0
+support_mobile: false
+
+permissions:
+  required:
+    # 本地 AI 增强包（更高精度 OCR / 图像修复等）按需下载需要外网；
+    # 核心的文件处理全部在本机完成，不依赖任何外部服务。
+    - net.internet
+
+locales:
+  zh-CN:
+    name: SnapOtter 文件处理
+    description: 自托管的文件处理工作台：图片/音频/视频/PDF/文档的格式转换、压缩、OCR 识别、语音转写、抠图与去背景，200+ 工具全部跑在自己的微服上。
+    usage: |
+      SnapOtter 把常见的「转换 / 压缩 / OCR / 转写 / 去背景」等 200 多个文件处理工具装进你的微服，文件不离开自己的网络。
+
+      首次使用：
+      1. 打开应用即可使用，界面已经是简体中文；应用内没有单独的登录步骤，访问控制由微服账号体系负责。
+      2. 在左侧按类型挑选工具：
+         - 图片：格式转换、压缩、裁剪旋转、抠图去背景、放大、老照片修复上色、人脸模糊、去水印、生成图标；
+         - 音频：格式转换、剪辑、提取音轨、语音转文字；
+         - 视频：格式转换、压缩、抽帧、生成字幕、拼接；
+         - PDF：合并、拆分、压缩、加密解密、OCR 识别、页码水印；
+         - 文档：格式互转（Word/Excel/PPT/PDF 等）、清理元数据。
+      3. 把文件拖进页面（或点击上传），选好参数后开始处理，完成后可直接预览与下载。
+      4. 需要一次做多步时，用「流水线」把多个工具串成一条流程，例如「视频 → 提取音频 → 转写文字」。
+
+      日常使用：
+      - 所有文件与处理结果都保存在微服的数据目录，重启与升级都不会丢失。
+      - 支持 REST API（页面内提供 /api/docs 交互文档）与 API Key，方便脚本或其它应用调用。
+      - 手机浏览器同样可用，适合在手机上压缩图片、把照片转成 PDF。
+      - 上传大小、批量数量、并发任务数可在设置里按机器性能调整。
+
+      说明：
+      - 访问控制由微服账号体系负责，应用内不再单独要求登录，打开即用。
+      - 匿名遥测已在部署时关闭（SNAPOTTER_TELEMETRY=0），不上报任何使用数据。
+      - 容器内自带 PostgreSQL 17 与 Redis 8，无需另外准备数据库；数据统一放在应用数据目录。
+      - 本地 AI 增强包（更高精度 OCR、图像修复等）为按需下载，需要外网访问，不下载不影响基础功能。
+  en-US:
+    name: SnapOtter
+    description: Self-hosted file-processing workbench with 200+ tools for images, audio, video, PDF and documents — convert, compress, OCR, transcribe and remove backgrounds, all on your own box.
+    usage: |
+      SnapOtter bundles 200+ file-processing tools (convert, compress, OCR, transcribe, background removal) into your box. Your files never leave your network.
+
+      Getting started:
+      1. Open the app — the UI is available immediately and access control is handled by the box account system; the app itself has no separate login step.
+      2. Pick a tool by media type: image (convert, compress, crop, background removal, upscale, photo restoration, face blur, watermark removal), audio (convert, trim, extract, speech-to-text), video (convert, compress, frame extraction, subtitles), PDF (merge, split, compress, encrypt, OCR) and documents (office format conversion, metadata stripping).
+      3. Drop a file into the page, choose the options and start; preview and download the result when it finishes.
+      4. Chain several tools into a reusable Pipeline for multi-step work.
+
+      Notes:
+      - Files and results are stored in the app data directory and survive restarts and upgrades.
+      - A REST API with API keys (interactive docs at /api/docs) is included.
+      - Anonymous telemetry is disabled at deploy time (SNAPOTTER_TELEMETRY=0).
+      - PostgreSQL 17 and Redis 8 run inside the container; no external database is required.
+      - Optional AI accuracy packs are downloaded on demand and need internet; core tools work without them.
